@@ -5,9 +5,11 @@ import static jakarta.ws.rs.core.Response.Status.NOT_FOUND;
 import static jakarta.ws.rs.core.Response.Status.NO_CONTENT;
 
 import java.util.List;
+import java.util.Random;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.persistence.criteria.JoinType;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.GET;
@@ -30,26 +32,34 @@ public class FruitMutinyResource {
     @Inject
     SessionFactory sf;
 
+    private static final Random random = new Random();
+
     @GET
     public Uni<List<Fruit>> get() {
-        return sf.withTransaction((s,t) -> s
-                .createNamedQuery("Fruits.findAll", Fruit.class)
-                .getResultList()
-        );
+        return sf.withStatelessTransaction(s -> {
+            var cb = sf.getCriteriaBuilder();
+            var query = cb.createQuery(Fruit.class);
+            var root = query.from(Fruit.class);
+            query.orderBy(cb.asc(root.get(Fruit_.seed).get(Seed_.id)));
+            root.fetch(Fruit_.friends, JoinType.LEFT);
+            return s.createQuery(query).getResultList();
+        });
     }
 
     @GET
     @Path("{id}")
     public Uni<Fruit> getSingle(Integer id) {
-        return sf.withTransaction((s,t) -> s.find(Fruit.class, id));
+        return sf.withTransaction((s,t) -> s.find(Fruit.class, new Seed(id)));
     }
 
     @POST
     public Uni<Response> create(Fruit fruit) {
-        if (fruit == null || fruit.getId() != null) {
+        if (fruit == null || fruit.getSeed().getId() != null) {
             throw new WebApplicationException("Id was invalidly set on request.", 422);
         }
 
+        fruit.getSeed().setId(random.nextInt(999999) + 3);
+        System.err.println(fruit.getSeed().getId());
         return sf.withTransaction((s,t) -> s.persist(fruit))
                 .replaceWith(Response.ok(fruit).status(CREATED)::build);
     }
@@ -61,7 +71,7 @@ public class FruitMutinyResource {
             throw new WebApplicationException("Fruit name was not set on request.", 422);
         }
 
-        return sf.withTransaction((s,t) -> s.find(Fruit.class, id)
+        return sf.withTransaction((s,t) -> s.find(Fruit.class, new Seed(id))
                 .onItem().ifNull().failWith(new WebApplicationException("Fruit missing from database.", NOT_FOUND))
                 // If entity exists then update it
                 .invoke(entity -> entity.setName(fruit.getName())))
@@ -71,10 +81,11 @@ public class FruitMutinyResource {
     @DELETE
     @Path("{id}")
     public Uni<Response> delete(Integer id) {
-        return sf.withTransaction((s,t) -> s.find(Fruit.class, id)
+        return sf.withTransaction((s,t) -> s.find(Fruit.class, new Seed(id))
                 .onItem().ifNull().failWith(new WebApplicationException("Fruit missing from database.", NOT_FOUND))
                 // If entity exists then delete it
                 .call(s::remove))
-                .replaceWith(Response.ok().status(NO_CONTENT)::build);    }
+                .replaceWith(Response.ok().status(NO_CONTENT)::build);
+    }
 
 }
